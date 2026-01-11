@@ -1,101 +1,78 @@
 import runpod
-from diffusers import StableDiffusionXLPipeline
 import torch
-from PIL import Image
+from diffusers import StableDiffusionXLPipeline, AutoencoderKL
 import base64
-from io import BytesIO
+import io
 
-# ==========================================
-# 1. CARGAR EL MODELO (Solo al inicio)
-# ==========================================
-print("🌍 Iniciando GAIA: Cargando modelo SDXL Turbo...")
+# --- 1. CONFIGURACIÓN INICIAL (Cold Start) ---
+# Esto se ejecuta una sola vez cuando el servidor "despierta".
+print("🏗️ INICIANDO VULCAN: Cargando modelos SDXL...")
 
-# Usamos SDXL Turbo porque es rapidísimo (ideal para prototipado)
-# y genera texturas nítidas perfectas para heightmaps.
-pipe = StableDiffusionXLPipeline.from_pretrained(
-    "stabilityai/sdxl-turbo",
-    torch_dtype=torch.float16,
-    variant="fp16"
-)
+try:
+    # Cargar el VAE (mejora los colores y detalles)
+    vae = AutoencoderKL.from_pretrained(
+        "madebyollin/sdxl-vae-fp16-fix", 
+        torch_dtype=torch.float16
+    )
 
-# Mover el modelo a la GPU
-pipe.to("cuda")
-
-print("✅ GAIA: Modelo cargado y listo en GPU.")
-
-# ==========================================
-# 2. FUNCIÓN PARA GENERAR HEIGHTMAP
-# ==========================================
-def generate_terrain_heightmap(user_prompt):
-    """
-    Toma un texto y genera una imagen en escala de grises para UEFN.
-    """
+    # Cargar el Modelo Principal (SDXL 1.0 Base)
+    pipe = StableDiffusionXLPipeline.from_pretrained(
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        vae=vae,
+        torch_dtype=torch.float16,
+        variant="fp16",
+        use_safetensors=True
+    )
     
-    # EL SECRETO DE GAIA: El "Prompt Mágico"
-    # Forzamos al modelo a pensar en topografía, no en fotos reales.
-    system_prefix = "grayscale topographic heightmap, overhead view, high contrast between peaks and valleys, seamless texture, unreal engine 5 landscape mask, 8k resolution, sharp edges."
+    # Mover a la GPU para máxima velocidad
+    pipe.to("cuda")
     
-    negative_prompt = "colors, blue sky, green grass, water, 3d objects, buildings, trees, blurry, blurry noise, text, signature"
+    # Optimizaciones de memoria (opcional, pero recomendado)
+    # pipe.enable_model_cpu_offload() 
     
-    # Combinamos lo que pide el usuario con nuestras instrucciones técnicas
-    final_prompt = f"{user_prompt}, {system_prefix}"
+    print("✅ VULCAN ONLINE: Modelos cargados y listos.")
+    
+except Exception as e:
+    print(f"❌ ERROR CRÍTICO AL CARGAR MODELOS: {e}")
+    raise e
 
-    print(f"🎨 Generando terreno para: {final_prompt}")
-
-    # Generar imagen
-    image = pipe(
-        prompt=final_prompt,
-        negative_prompt=negative_prompt,
-        num_inference_steps=4,  # SDXL Turbo solo necesita 4 pasos (¡Rápido!)
-        guidance_scale=2.0
-    ).images[0]
-
-    return image
-
-def image_to_base64(image):
-    """Convierte la imagen PIL a texto Base64 para enviarla por internet"""
-    buffered = BytesIO()
-    # Guardar como PNG sin compresión para mantener la calidad del heightmap
-    image.save(buffered, format="PNG")
-    img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
-    return img_str
-
-# ==========================================
-# 3. EL HANDLER (Escucha las peticiones de tu App)
-# ==========================================
+# --- 2. EL MANEJADOR DE PETICIONES (Handler) ---
 def handler(event):
     """
-    Esta función se ejecuta cada vez que tu app hace click en "Enviar Misión".
+    Esta función se ejecuta cada vez que envías una orden desde tu App.
     """
+    print("📩 Nueva misión recibida.")
+    
+    # Leer el input (si no hay prompt, usa uno por defecto)
     input_data = event.get("input", {})
+    prompt = input_data.get("prompt", "A futuristic cyberpunk shark boat, neon lights, unreal engine 5 render, 8k")
+    negative_prompt = input_data.get("negative_prompt", "low quality, blurry, distorted, ugly")
     
-    # Obtener el texto del usuario
-    prompt = input_data.get("prompt", "")
-    
-    if not prompt:
-        return {"error": "No se recibió ningún prompt."}
-
     try:
-        # A. Generar la imagen
-        terrain_image = generate_terrain_heightmap(prompt)
+        # Generar la imagen
+        print(f"🎨 Pintando: {prompt}")
+        image = pipe(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            num_inference_steps=30, # Calidad vs Velocidad (30 es buen balance)
+            guidance_scale=7.5
+        ).images[0]
         
-        # B. Convertir a Base64
-        img_base64 = image_to_base64(terrain_image)
+        # Convertir imagen a Base64 para enviarla de vuelta
+        buffered = io.BytesIO()
+        image.save(buffered, format="PNG")
+        img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
         
-        # C. Devolver respuesta a tu App JS
+        print("🚀 Misión cumplida. Enviando imagen.")
+        
         return {
-            "output": {
-                "status": "success",
-                "image_base64": img_base64,
-                "message": f"Heightmap generado para: {prompt}"
-            }
+            "status": "success",
+            "image_base64": img_str
         }
-
+        
     except Exception as e:
-        print(f"❌ Error en GAIA: {e}")
-        return {
-            "error": str(e)
-        }
+        print(f"❌ Error generando imagen: {e}")
+        return {"status": "error", "message": str(e)}
 
-# Iniciar el servidor de RunPod
+# --- 3. INICIAR SERVIDOR ---
 runpod.serverless.start({"handler": handler})
