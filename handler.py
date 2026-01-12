@@ -1,21 +1,20 @@
 import runpod
 import torch
-from diffusers import StableDiffusionXLPipeline, AutoencoderKL
+from diffusers import StableDiffusionXLPipeline, AutoencoderKL, EulerAncestralDiscreteScheduler
 import base64
 import io
 
-# --- 1. CONFIGURACIÓN INICIAL (Cold Start) ---
-# Esto se ejecuta una sola vez cuando el servidor "despierta".
-print("🏗️ INICIANDO VULCAN: Cargando modelos SDXL...")
+print("🎨 INICIANDO GAIA (SDXL Engine)...")
 
+# --- CARGA DEL MODELO (Optimizado en FP16) ---
 try:
-    # Cargar el VAE (mejora los colores y detalles)
+    # 1. Cargar VAE (Mejora colores y bordes, vital para 3D)
     vae = AutoencoderKL.from_pretrained(
         "madebyollin/sdxl-vae-fp16-fix", 
         torch_dtype=torch.float16
     )
 
-    # Cargar el Modelo Principal (SDXL 1.0 Base)
+    # 2. Cargar Modelo Base
     pipe = StableDiffusionXLPipeline.from_pretrained(
         "stabilityai/stable-diffusion-xl-base-1.0",
         vae=vae,
@@ -24,55 +23,62 @@ try:
         use_safetensors=True
     )
     
-    # Mover a la GPU para máxima velocidad
+    # 3. Scheduler Rápido (Euler A es rápido y creativo)
+    pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
+    
+    # Mover a GPU
     pipe.to("cuda")
     
-    # Optimizaciones de memoria (opcional, pero recomendado)
-    # pipe.enable_model_cpu_offload() 
+    # Compilar para velocidad extra (Opcional, puede tardar el primer inicio)
+    # pipe.unet = torch.compile(pipe.unet, mode="reduce-overhead", fullgraph=True)
     
-    print("✅ VULCAN ONLINE: Modelos cargados y listos.")
-    
+    print("✅ GAIA ONLINE: Listo para pintar.")
+
 except Exception as e:
-    print(f"❌ ERROR CRÍTICO AL CARGAR MODELOS: {e}")
+    print(f"❌ ERROR CRÍTICO: {e}")
     raise e
 
-# --- 2. EL MANEJADOR DE PETICIONES (Handler) ---
 def handler(event):
-    """
-    Esta función se ejecuta cada vez que envías una orden desde tu App.
-    """
-    print("📩 Nueva misión recibida.")
-    
-    # Leer el input (si no hay prompt, usa uno por defecto)
     input_data = event.get("input", {})
-    prompt = input_data.get("prompt", "A futuristic cyberpunk shark boat, neon lights, unreal engine 5 render, 8k")
-    negative_prompt = input_data.get("negative_prompt", "low quality, blurry, distorted, ugly")
     
+    # --- ENTRADA DEL USUARIO ---
+    user_prompt = input_data.get("prompt", "a futuristic tank")
+    
+    # --- ⚙️ OPTIMIZACIÓN 3D (SECRET SAUCE) ---
+    # Inyectamos esto para asegurar que VULCAN entienda la imagen después
+    forced_suffix = ", white background, 3d render style, orthographic view, 4k, high quality, studio lighting, clean geometry"
+    full_prompt = user_prompt + forced_suffix
+    
+    # Negative Prompt para evitar ruido y fondos complejos
+    negative_prompt = "shadows, complex background, noise, messy, blurry, low quality, text, watermark, human, organic"
+
     try:
-        # Generar la imagen
-        print(f"🎨 Pintando: {prompt}")
+        print(f"🖌️ Generando Blueprint: {user_prompt}")
+        
+        # Generación Estricta 1024x1024 (Nativo de SDXL y perfecto para TripoSR)
         image = pipe(
-            prompt=prompt,
+            prompt=full_prompt,
             negative_prompt=negative_prompt,
-            num_inference_steps=30, # Calidad vs Velocidad (30 es buen balance)
-            guidance_scale=7.5
+            height=1024,
+            width=1024,
+            num_inference_steps=30, # 30 pasos es el equilibrio calidad/velocidad
+            guidance_scale=7.0
         ).images[0]
         
-        # Convertir imagen a Base64 para enviarla de vuelta
+        # Convertir a Base64
         buffered = io.BytesIO()
         image.save(buffered, format="PNG")
         img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
         
-        print("🚀 Misión cumplida. Enviando imagen.")
+        print("🚀 Blueprint Terminado.")
         
         return {
             "status": "success",
             "image_base64": img_str
         }
-        
+
     except Exception as e:
-        print(f"❌ Error generando imagen: {e}")
+        print(f"❌ Error en GAIA: {e}")
         return {"status": "error", "message": str(e)}
 
-# --- 3. INICIAR SERVIDOR ---
 runpod.serverless.start({"handler": handler})
