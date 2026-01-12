@@ -4,5 +4,4 @@ diffusers
 transformers
 accelerate
 safetensors
-scipy
 xformers
