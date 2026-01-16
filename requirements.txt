@@ -5,3 +5,7 @@ transformers
 accelerate
 safetensors
 xformers
+pillow
+numpy
+opencv-python
+controlnet_aux
